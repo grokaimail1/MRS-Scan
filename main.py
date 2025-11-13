@@ -47,7 +47,7 @@ scan_interval = 15 * 60  # 15 minutes
 
 ist = pytz.timezone('Asia/Kolkata')
 market_open = dt_time(9, 30)
-market_close = dt_time(15, 15)
+market_close = dt_time(23, 15)
 
 output_file = f"WaveTrend_Auto_Signals_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
 
