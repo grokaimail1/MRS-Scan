@@ -1,3 +1,8 @@
+# ==========================
+# MRS Strategy Live (Bollinger Band RSI and Wave combination)
+# ==========================
+
+
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -6,8 +11,7 @@ import time
 import os
 import requests
 import pytz
-import threading
-from concurrent.futures import ThreadPoolExecutor
+
 # ---------------- SETTINGS ----------------
 symbols = [
     "360ONE.NS", "ABB.NS", "APLAPOLLO.NS", "AUBANK.NS", "ADANIENSOL.NS", "ADANIENT.NS",
@@ -40,22 +44,19 @@ symbols = [
     "UNITDSPR.NS", "VBL.NS", "VEDL.NS", "IDEA.NS", "VOLTAS.NS", "WIPRO.NS", "YESBANK.NS", "ZYDUSLIFE.NS"
 ]
 interval = "15m"
-period = "1d"
+period = "50d"
 n1, n2 = 10, 21
 crossZone = 80
-scan_interval = 15 * 60  # 15 minutes
-
 ist = pytz.timezone('Asia/Kolkata')
-market_open = dt_time(9, 30)
-market_close = dt_time(15, 15)
 
-output_file = f"WaveTrend_Auto_Signals_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+TELEGRAM_TOKEN = "8401397406:AAFdTIQkK6Ky6eqvQRiXZqcraTr5wMYtLXM"
+CHAT_ID = "684584763"
 
-# Telegram settings - FILL THESE
-TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
-CHAT_ID = os.environ['CHAT_ID']
+#TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
+#CHAT_ID = os.environ['CHAT_ID']
 
 # ---------- UTILITIES ----------
+
 def send_telegram_message(telegram_token: str, chat_id: str, text: str, parse_mode: str = "Markdown"):
     url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode, "disable_web_page_preview": True}
@@ -96,7 +97,7 @@ def calculate_rsi(df, period=14):
     df["RSI"] = 100 - (100 / (1 + rs))
     return df
 
-def calculate_bollinger_bands(df, period=20, std_dev=2):
+def calculate_bollinger(df, period=20, std_dev=2):
     close = df["Close"].astype(float).to_numpy().ravel()
     mid = pd.Series(close, index=df.index).rolling(window=period, min_periods=1).mean()
     std = pd.Series(close, index=df.index).rolling(window=period, min_periods=1).std(ddof=0)
@@ -122,94 +123,41 @@ def generate_signals(df, crossZone=75):
     return df
 
 # ---------- SCAN & NOTIFY ----------
-def run_scan_and_notify():
-    all_signals = []
+def run_scan_once():
     for symbol in symbols:
-        print(f"📡 Fetching data for {symbol} ...")
+
+        print(f"📡 Scanning {symbol}")
+
         try:
-            df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=True)
+            df = yf.download(symbol, period=period, interval=interval, auto_adjust=True, progress=False)
             if df.empty:
-                print(f"⚠️ No data for {symbol}")
                 continue
+
             df = clean_df(df)
-            df = calculate_wavetrend(df, n1, n2)
+            df = calculate_wavetrend(df)
             df = calculate_rsi(df)
-            df = calculate_bollinger_bands(df)
-            df = generate_signals(df, crossZone)
-            signals = df[df["Signal"] != ""].copy()
-            if signals.empty:
+            df = calculate_bollinger(df)
+            df = generate_signals(df)
+
+            last = df.iloc[-1]
+            if last["Signal"] == "":
                 continue
-            signals = signals.reset_index().rename(columns={"index": "Datetime"})
-            signals["Symbol"] = symbol
-            signals["ScanTime"] = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S")
-            signals = signals[["ScanTime", "Symbol", "Datetime", "Open", "Close", "wt1", "wt2", "RSI", "BB_Lower", "BB_Upper", "Signal"]]
-            all_signals.append(signals)
+
+            sig = last["Signal"]
+            price = round(last["Close"], 2)
+            sig_emoji = "🟢" if sig == "Buy" else "🔴"
+
+            dt = df.index[-1].tz_localize("UTC").astimezone(ist).strftime("%Y-%m-%d %H:%M")
+
+            msg = f"*{symbol}*\n{sig_emoji} {sig} (MRS)\n{dt} IST\nClose: `{price}`"
+
+            if send_telegram_message(TELEGRAM_TOKEN, CHAT_ID, msg):
+                print(f"✔️ Alert sent for {symbol}")
+
         except Exception as e:
-            print(f"❌ Error fetching {symbol}: {e}")
-    if all_signals:
-        new_data = pd.concat(all_signals, ignore_index=True)
-        if os.path.exists(output_file):
-            new_data.to_csv(output_file, mode="a", header=False, index=False)
-        else:
-            new_data.to_csv(output_file, index=False)
-        grouped = new_data.groupby("Symbol")
-        for symbol, group in grouped:
-            for _, row in group.iterrows():
-                utc_dt = pd.to_datetime(row["Datetime"])
-                # If Datetime is timezone-aware, convert; else, localize as naive UTC then convert
-                if utc_dt.tzinfo is None:
-                    utc_dt = utc_dt.tz_localize('UTC')
-                ist_dt = utc_dt.astimezone(ist)
-                dt = ist_dt.strftime("%Y-%m-%d %H:%M")
-                sig = row["Signal"]
-                close = round(row["Close"], 2)
-                sig_emoji = "🟢" if sig == "Buy" else "🔴" if sig == "Sell" else ""
-                message = (
-                    f"*{symbol}*\n"
-                    f"{sig_emoji} {sig} (MRS)\n"
-                    f"{dt} (IST)\n"
-                    f"Close: `{close}`"
-                )
-                resp = send_telegram_message(TELEGRAM_TOKEN, CHAT_ID, message)
-                if resp is not None:
-                    print(f"✅ Telegram notified for {symbol}")
-                else:
-                    print(f"⚠️ Telegram failed for {symbol}")
+            print(f"❌ Error: {symbol}: {e}")
 
-        print(f"✅ {len(new_data)} signals logged and notified at {datetime.now(ist).strftime('%H:%M:%S')}\n")
-    else:
-        print(f"⚠️ No new signals at {datetime.now(ist).strftime('%H:%M:%S')}\n")
 
-def is_market_open():
-    now = datetime.now(ist).time()
-    return market_open <= now <= market_close
-
-# ---------------- THREADING & EXIT LOGIC ----------------
-stop_flag = threading.Event()
-
-def scanner_loop():
-    market_closed_printed = False
-    while not stop_flag.is_set():
-        if is_market_open():
-            market_closed_printed = False
-            run_scan_and_notify()
-            print(f"⏳ Waiting {scan_interval // 60} minutes for next scan...\n")
-            stop_flag.wait(scan_interval)
-        else:
-            if not market_closed_printed:
-                print("🔒 Market closed. Scanner stopped until next market open.\n")
-                market_closed_printed = True
-            break
-
-print("\n🚀 WaveTrend Auto Scanner with Telegram Started (every 15 min)\nPress CTRL + C to stop.\n")
-
-try:
-    scan_thread = threading.Thread(target=scanner_loop)
-    scan_thread.start()
-    while scan_thread.is_alive():
-        scan_thread.join(timeout=1)
-except KeyboardInterrupt:
-    print("\n🛑 Scanner stopping by user...")
-    stop_flag.set()
-    scan_thread.join()
-    print("🛑 Scanner stopped.")
+# Run once and exit
+run_scan_once()
+print("\n✅ Scan finished.\n")
