@@ -2,8 +2,8 @@ name: run main.py
 
 on:
   schedule:
-    - cron: '45 3 * * 1-5'   # 03:45 UTC = 09:15 IST, Mon–Fri
-  workflow_dispatch: {}       # manual trigger available
+    - cron: "*/15 3-9 * * 1-5"
+  workflow_dispatch: {}
 
 jobs:
   build:
